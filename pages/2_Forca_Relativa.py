@@ -10,7 +10,7 @@ st.set_page_config(page_title="Relative Strength - Cripto", layout="wide")
 
 # Atualização do banco de dados
 try:
-    st.info("🔄 Atualizando dados do banco via main.py...")
+    st.info("🔄 Atualizando dados do banco via...")
     subprocess.run([sys.executable, "update_data/rs.py"], check=True)
 
     st.success("✅ Dados atualizados com sucesso!")

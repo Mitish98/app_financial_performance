@@ -10,7 +10,7 @@ st.set_page_config(page_title="Correlação Móvel - Finance", layout="wide")
 
 # Executa o main.py para atualizar o banco de dados
 try:
-    st.info("🔄 Atualizando dados do banco via main.py...")
+    st.info("🔄 Atualizando dados do banco via...")
     subprocess.run([sys.executable, "update_data/correlation.py"], check=True)
     st.success("✅ Dados atualizados com sucesso!")
 except subprocess.CalledProcessError as e:
