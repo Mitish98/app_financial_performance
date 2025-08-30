@@ -1,169 +1,164 @@
 import streamlit as st
+import asyncio
+from binance.client import Client
 import pandas as pd
-import plotly.express as px
-from sqlalchemy import create_engine
-import subprocess
-import sys
+import requests
+from ta.momentum import RSIIndicator
+from dotenv import load_dotenv
+import os
 
-# Deve ser a primeira chamada de Streamlit
-st.set_page_config(page_title="Relative Strength - Cripto", layout="wide")
+# Carregar variáveis de ambiente do arquivo .env
+load_dotenv()
 
-# Atualização do banco de dados
-try:
-    st.info("🔄 Atualizando dados do banco via...")
-    subprocess.run([sys.executable, "update_data/rs.py"], check=True)
+# Importando credenciais
+api_key_spot = os.getenv("api_key_spot")
+api_secret_spot = os.getenv("api_secret_spot")
+telegram_bot_token = os.getenv("telegram_bot_token")
+telegram_chat_id = os.getenv("telegram_chat_id")
 
-    st.success("✅ Dados atualizados com sucesso!")
-except subprocess.CalledProcessError as e:
-    st.error(f"❌ Erro ao atualizar os dados: {e}")
-    st.stop()
+# Inicializando o cliente Binance
+client = Client(api_key_spot, api_secret_spot)
 
-# Configuração do banco
-DB_PATH = "sqlite:///performance.db"
-engine = create_engine(DB_PATH)
-
-st.title("💪 Análise de Performance entre Criptomoedas")
-
-# -------------------------
-# Carregamento de dados
-# -------------------------
-@st.cache_data(ttl=60)
-def load_rs_data():
-    query = "SELECT * FROM relative_strength_long"
-    df = pd.read_sql(query, con=engine)
-    df["Date"] = pd.to_datetime(df["Date"])
+# Funções auxiliares
+def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
+    df['SMA'] = df['close'].rolling(window=num_periods).mean()
+    df['std_dev'] = df['close'].rolling(window=num_periods).std()
+    df['upper_band'] = df['SMA'] + (std_dev_factor * df['std_dev'])
+    df['lower_band'] = df['SMA'] - (std_dev_factor * df['std_dev'])
     return df
 
-@st.cache_data(ttl=60)
-def load_price_data():
-    query = "SELECT * FROM asset_prices"
-    df = pd.read_sql(query, con=engine)
-    df["Date"] = pd.to_datetime(df["Date"])
+def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
+    df['L14'] = df['low'].rolling(window=k_period).min()
+    df['H14'] = df['high'].rolling(window=k_period).max()
+    df['%K'] = ((df['close'] - df['L14']) / (df['H14'] - df['L14'])) * 100
+    df['%D'] = df['%K'].rolling(window=d_period).mean()
     return df
 
-with st.spinner("📊 Carregando dados..."):
-    df_rs = load_rs_data()
-    df_prices = load_price_data()
+async def fetch_ticker_and_candles(symbol, timeframe):
+    try:
+        candles = client.get_klines(symbol=symbol, interval=timeframe, limit=50)
+        df = pd.DataFrame(candles, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 
+                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
+                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        
+        # Convertendo para os tipos corretos
+        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+        df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+        df['open'] = df['open'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
 
-# -------------------------
-# 📈 Ranking de Performance Absoluta
-# -------------------------
-st.subheader("📈 Ranking de Performance Absoluta com Dados do Banco")
+        ticker = client.get_symbol_ticker(symbol=symbol)
+        current_price = float(ticker['price'])
 
-period_options = {
-    "Últimos 3 dias": 3,
-    "Últimos 7 dias": 7,
-    "Últimos 21 dias": 21,
-    "Últimos 30 dias": 30,
-    "Últimos 60 dias": 60,
-    "Últimos 90 dias": 90,
-    "Últimos 180 dias": 180,
-    "Últimos 360 dias": 360
-}
+        return current_price, df
+    except Exception as e:
+        st.error(f"Erro ao obter dados de {symbol} no timeframe {timeframe}: {e}")
+        return None, None
 
-selected_period_label = st.selectbox("🕒 Selecione o período de análise:", list(period_options.keys()))
-selected_period_days = period_options[selected_period_label]
+async def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
+    payload = {"chat_id": telegram_chat_id, "text": message}
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erro ao enviar mensagem para o Telegram: {e}")
 
-last_date = df_prices["Date"].max()
-start_date = last_date - pd.Timedelta(days=selected_period_days)
-df_period = df_prices[(df_prices["Date"] >= start_date) & (df_prices["Date"] <= last_date)]
+# Controle de notificações para evitar repetições
+last_notifications = {}
 
-if df_period.empty or df_period["Date"].nunique() < 2:
-    st.warning("📆 Intervalo insuficiente para análise.")
-    st.stop()
+async def notify_conditions(symbol, timeframes, notify_telegram, signal_choice):
+    """Envia notificações com controle de repetição."""
+    while True:
+        for timeframe in timeframes:
+            current_price, df = await fetch_ticker_and_candles(symbol, timeframe)
+            if df is None:
+                await asyncio.sleep(5)
+                continue
 
-# Cálculo dos dados
-start_prices = df_period[df_period["Date"] == df_period["Date"].min()].set_index("Ticker")["Price"]
-end_prices = df_period[df_period["Date"] == df_period["Date"].max()].set_index("Ticker")["Price"]
-performance = ((end_prices / start_prices) - 1).sort_values(ascending=False)
+            # Indicadores
+            df = calculate_bollinger_bands(df)
+            df = calculate_stochastic_oscillator(df)
+            rsi_indicator = RSIIndicator(df['close'], window=14)
+            df['rsi'] = rsi_indicator.rsi()
 
-volume_total = df_period.groupby("Ticker")["Volume"].sum()
-volume_total.name = "Volume Total"
+            upper_band = df['upper_band'].iloc[-1]
+            lower_band = df['lower_band'].iloc[-1]
+            stochastic_k = df['%K'].iloc[-1]
+            stochastic_d = df['%D'].iloc[-1]
+            rsi = df['rsi'].iloc[-1]
+            volume_ma = df['volume'].rolling(window=21).mean().iloc[-1]  # Média móvel de volume
 
-indicators_avg = df_period.groupby("Ticker")[
-    ["RSI", "MACD", "MACD_Signal", "SMA_20", "SMA_50", "EMA_20", "EMA_50"]
-].mean().reset_index()
+            # Novo critério: volume > 100% acima da média (2x a média)
+            high_volume = df['volume'].iloc[-1] > 3 * volume_ma
 
-current_prices = df_period[df_period["Date"] == last_date].set_index("Ticker")["Price"]
-current_prices.name = "Preço Atual"
+            # Determinar sinal atual
+            current_signal = None
+            if (
+                current_price < lower_band and 
+                stochastic_k < 20 and 
+                stochastic_d < 20 and 
+                high_volume and 
+                rsi < 30 and
+                signal_choice in ["Compra", "Ambos"]
+            ):
+                current_signal = "COMPRA"
+            elif (
+                current_price > upper_band and 
+                stochastic_k > 80 and 
+                stochastic_d > 80 and 
+                high_volume and 
+                rsi > 70 and
+                signal_choice in ["Venda", "Ambos"]
+            ):
+                current_signal = "VENDA"
 
-performance_df = performance.to_frame(name="Retorno").reset_index()
-performance_df = performance_df.merge(volume_total.reset_index(), on="Ticker", how="left")
-performance_df = performance_df.merge(indicators_avg, on="Ticker", how="left")
-performance_df = performance_df.merge(current_prices.reset_index(), on="Ticker", how="left")
+            # Evitar notificações repetidas
+            key = f"{symbol}_{timeframe}"
+            last_signal = last_notifications.get(key)
 
-top_n = st.slider("Número de ativos a exibir:", 3, min(20, len(performance_df)), 5)
+            if current_signal and current_signal != last_signal:
+                message = (
+                    f"Sinal de {current_signal} para {symbol} no timeframe {timeframe}:\n"
+                    f"Preço atual: {current_price}\n"
+                )
+                st.info(message)
+                if notify_telegram:
+                    await send_telegram_message(message)
+                last_notifications[key] = current_signal
 
-# Ganhadores
-st.markdown(f"### 🟢 Top {top_n} Ganhadores em {selected_period_label}")
-st.dataframe(
-    performance_df.head(top_n).style.format({
-        "Retorno": "{:.2%}",
-        "Volume Total": "{:,.0f}",
-        "RSI": "{:.2f}",
-        "MACD": "{:.5f}",
-        "MACD_Signal": "{:.5f}",
-        "SMA_20": "{:.5f}",
-        "SMA_50": "{:.5f}",
-        "EMA_20": "{:.5f}",
-        "EMA_50": "{:.5f}",
-        "Preço Atual": "U$ {:,.2f}"
-    }),
-    use_container_width=True
-)
+            await asyncio.sleep(60)
 
-# Perdedores
-st.markdown(f"### 🔴 Top {top_n} Perdedores em {selected_period_label}")
-st.dataframe(
-    performance_df.tail(top_n).sort_values(by="Retorno").style.format({
-        "Retorno": "{:.2%}",
-        "Volume Total": "{:,.0f}",
-        "RSI": "{:.2f}",
-        "MACD": "{:.5f}",
-        "MACD_Signal": "{:.5f}",
-        "SMA_20": "{:.5f}",
-        "SMA_50": "{:.5f}",
-        "EMA_20": "{:.5f}",
-        "EMA_50": "{:.5f}",
-        "Preço Atual": "U$ {:,.2f}"
-    }),
-    use_container_width=True
-)
+# Configuração do Streamlit
+st.title("Robô de Notificação para Criptomoedas")
+st.write("O sistema utiliza uma combinação de indicadores técnicos para gerar sinais de compra e venda.")
 
-# -------------------------
-# Gráfico de Força Relativa
-# -------------------------
-st.subheader("📈 Força Relativa entre Criptomoedas")
+# Entrada do usuário
+all_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOTUSDT", "DOGEUSDT", "FTMUSDT", "ASTRUSDT", "XRPUSDT", "SOLUSDT", 
+               "LTCUSDT", "PENDLEUSDT", "AAVEUSDT", "ORDIUSDT", "UNIUSDT", "LINKUSDT", 
+               "ENSUSDT", "MOVRUSDT", "ARBUSDT", "TRBUSDT", "MANTAUSDT", "AVAXUSDT", "ADAUSDT", "GALAUSDT","LDOUSDT"]
 
-available_pairs = sorted(df_rs["Pair"].unique())
-selected_pair = st.selectbox("Selecione um par para análise:", available_pairs)
+select_all = st.sidebar.checkbox("Selecionar todos os pares")
+symbols = st.sidebar.multiselect("Selecione os pares de moedas", all_symbols, default=all_symbols if select_all else [])
+timeframes = st.sidebar.multiselect("Selecione o(s) timeframe(s)", ["1m", "5m", "15m", "1h", "4h", "1d"])
+notify_telegram = st.sidebar.checkbox("Enviar notificações no Telegram", value=False)
+signal_choice = st.sidebar.radio("Selecione os sinais desejados", ["Compra", "Venda", "Ambos"], index=2)
 
-available_windows = sorted(df_rs["Window"].unique())
-selected_window = st.selectbox("Janela da média móvel:", available_windows)
+if st.sidebar.button("Iniciar Monitoramento"):
+    if not symbols:
+        st.error("Por favor, selecione pelo menos um par de moedas.")
+    elif not timeframes:
+        st.error("Por favor, selecione pelo menos um timeframe.")
+    else:
+        if notify_telegram:
+            st.success("Monitoramento iniciado com notificações no Telegram! Acompanhe os alertas abaixo.")
+        else:
+            st.warning("Monitoramento iniciado sem notificações no Telegram. Apenas os alertas locais serão exibidos.")
 
-df_selected = df_rs[
-    (df_rs["Pair"] == selected_pair) &
-    (df_rs["Window"] == selected_window)
-].copy()
-
-fig = px.line()
-fig.add_scatter(x=df_selected["Date"], y=df_selected["RS"], mode='lines', name='Força Relativa')
-fig.add_scatter(x=df_selected["Date"], y=df_selected["RS_Smooth"], mode='lines', name=f"Média {selected_window} dias")
-
-fig.update_layout(
-    title=f"{selected_pair}",
-    xaxis_title="Data",
-    yaxis_title="Base / Quote",
-    height=500,
-    yaxis_range=[df_selected["RS"].min() * 0.9, df_selected["RS"].max() * 1.1],
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-csv = df_selected.to_csv(index=False).encode("utf-8")
-st.download_button(
-    label="📥 Baixar dados CSV",
-    data=csv,
-    file_name=f"rs_{selected_pair.replace('/', '_')}_{selected_window}d.csv",
-    mime="text/csv",
-)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        tasks = [notify_conditions(symbol, timeframes, notify_telegram, signal_choice) for symbol in symbols]
+        loop.run_until_complete(asyncio.gather(*tasks))
