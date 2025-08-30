@@ -15,7 +15,10 @@ def calculate_bollinger_bands(df, window=20, n_std=2):
         df['upper_band'] = pd.Series(dtype=float)
         df['lower_band'] = pd.Series(dtype=float)
         return df
-    indicator_bb = BollingerBands(close=df['Close'], window=window, window_dev=n_std)
+    close_series = df['Close']
+    if isinstance(close_series, pd.DataFrame):
+        close_series = close_series.squeeze()  # garante 1D
+    indicator_bb = BollingerBands(close=close_series, window=window, window_dev=n_std)
     df['upper_band'] = indicator_bb.bollinger_hband()
     df['lower_band'] = indicator_bb.bollinger_lband()
     return df
@@ -38,7 +41,7 @@ def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
 async def fetch_ticker_and_candles(symbol, timeframe, period="7d"):
     yf_symbol = symbol.replace("USDT", "-USD")
     try:
-        df = yf.download(yf_symbol, interval=timeframe, period=period, progress=False)
+        df = yf.download(yf_symbol, interval=timeframe, period=period, progress=False, auto_adjust=True)
         if df.empty:
             st.warning(f"No data for {yf_symbol}. Skipping...")
             return None, None
@@ -59,44 +62,39 @@ async def notify_conditions(symbol, timeframe):
     # Calcular indicadores
     df = calculate_bollinger_bands(df)
     df = calculate_stochastic_oscillator(df)
-    rsi_indicator = RSIIndicator(df['Close'], window=14)
+    rsi_indicator = RSIIndicator(df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close'], window=14)
     df['rsi'] = rsi_indicator.rsi()
 
     # Últimos valores
-    upper_band = df['upper_band'].iloc[-1]
-    lower_band = df['lower_band'].iloc[-1]
+    upper_band = df['upper_band'].iloc[-1] if not df['upper_band'].empty else None
+    lower_band = df['lower_band'].iloc[-1] if not df['lower_band'].empty else None
     stochastic_k = df['%K'].iloc[-1] if not df['%K'].empty else None
     stochastic_d = df['%D'].iloc[-1] if not df['%D'].empty else None
     rsi = df['rsi'].iloc[-1] if not df['rsi'].empty else None
 
-    # Determinar sinal (exemplo simples)
+    # Determinar sinal
     signal = None
-    if stochastic_k is not None and stochastic_d is not None:
+    if stochastic_k is not None and stochastic_d is not None and upper_band and lower_band:
         if stochastic_k > stochastic_d and current_price < lower_band:
             signal = "Compra"
         elif stochastic_k < stochastic_d and current_price > upper_band:
             signal = "Venda"
 
     # Atualizar Streamlit
-    chart_placeholder = st.empty()
-    with chart_placeholder.container():
-        st.write(f"**{symbol} ({timeframe})** - Preço: {current_price:.2f}")
-        st.write(f"RSI: {rsi:.2f if rsi else 'N/A'}, %K: {stochastic_k:.2f if stochastic_k else 'N/A'}, %D: {stochastic_d:.2f if stochastic_d else 'N/A'}")
-        st.write(f"Bollinger Bands -> Superior: {upper_band:.2f}, Inferior: {lower_band:.2f}")
-        st.write(f"Sinal: {signal if signal else 'Sem sinal'}")
+    st.write(f"**{symbol} ({timeframe})** - Preço: {current_price:.2f}")
+    st.write(f"RSI: {rsi:.2f if rsi else 'N/A'}, %K: {stochastic_k:.2f if stochastic_k else 'N/A'}, %D: {stochastic_d:.2f if stochastic_d else 'N/A'}")
+    st.write(f"Bollinger Bands -> Superior: {upper_band:.2f if upper_band else 'N/A'}, Inferior: {lower_band:.2f if lower_band else 'N/A'}")
+    st.write(f"Sinal: {signal if signal else 'Sem sinal'}")
 
 # ---------------------------
 # Loop principal
 # ---------------------------
-symbols = ["BTCUSDT", "ETHUSDT", "UNIUSDT", "FTMUSDT"]  # Exemplo
+symbols = ["BTCUSDT", "ETHUSDT", "UNIUSDT", "FTMUSDT"]  # exemplo
 timeframes = ["1h", "4h"]
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-tasks = []
-
-for symbol in symbols:
-    for timeframe in timeframes:
-        tasks.append(notify_conditions(symbol, timeframe))
+tasks = [notify_conditions(symbol, tf) for symbol in symbols for tf in timeframes]
 
 loop.run_until_complete(asyncio.gather(*tasks))
+git 
