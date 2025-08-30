@@ -8,14 +8,12 @@ import os
 import yfinance as yf
 import plotly.graph_objects as go
 
-# Carregar variáveis de ambiente do arquivo .env
+# Carregar variáveis de ambiente
 load_dotenv()
-
-# Credenciais Telegram
 telegram_bot_token = os.getenv("telegram_bot_token")
 telegram_chat_id = os.getenv("telegram_chat_id")
 
-# ---------------- Funções auxiliares ---------------- #
+# ---------------- Funções de indicadores ---------------- #
 
 def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
     df = df.copy()
@@ -27,19 +25,32 @@ def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
 
 def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
     df = df.copy()
+    
+    # Se MultiIndex, achatar
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    
+    for col in ['Close', 'High', 'Low']:
+        if col not in df.columns:
+            raise ValueError(f"Coluna {col} não encontrada no DataFrame")
+    
     df['L14'] = df['Low'].rolling(window=k_period).min()
     df['H14'] = df['High'].rolling(window=k_period).max()
-    # Evitar divisão por zero
-    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14']).replace(0,1)) * 100
+    
+    close = df['Close'].squeeze()
+    L14 = df['L14'].squeeze()
+    H14 = df['H14'].squeeze()
+    
+    df['%K'] = ((close - L14) / (H14 - L14).replace(0,1)) * 100
     df['%D'] = df['%K'].rolling(window=d_period).mean()
+    
     return df
 
+# ---------------- Funções de dados e notificações ---------------- #
+
 async def fetch_ticker_and_candles(symbol, timeframe):
-    yf_symbol = symbol.replace("USDT", "-USD")  # BTCUSDT -> BTC-USD
-    interval_mapping = {
-        "1m": "1m", "5m": "5m", "15m": "15m",
-        "1h": "60m", "4h": "4h", "1d": "1d"
-    }
+    yf_symbol = symbol.replace("USDT", "-USD")
+    interval_mapping = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m", "4h": "4h", "1d": "1d"}
     interval = interval_mapping.get(timeframe, "1m")
     period = "7d" if interval in ["1m", "5m", "15m", "60m"] else "60d"
 
@@ -62,7 +73,7 @@ async def send_telegram_message(message):
     except requests.exceptions.RequestException as e:
         st.error(f"Erro ao enviar mensagem para o Telegram: {e}")
 
-# Controle de notificações
+# ---------------- Controle de notificações ---------------- #
 last_notifications = {}
 
 async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder, chart_placeholder):
@@ -72,7 +83,6 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
             await asyncio.sleep(5)
             continue
 
-        # Indicadores
         df = calculate_bollinger_bands(df)
         df = calculate_stochastic_oscillator(df)
         rsi_indicator = RSIIndicator(df['Close'], window=14)
@@ -86,7 +96,6 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         volume_ma = df['Volume'].rolling(window=21).mean().iloc[-1]
         high_volume = df['Volume'].iloc[-1] > 3 * volume_ma
 
-        # Determinar sinal
         current_signal = None
         if current_price < lower_band and stochastic_k < 20 and stochastic_d < 20 and high_volume and rsi < 30 and signal_choice in ["Compra", "Ambos"]:
             current_signal = "COMPRA"
@@ -96,7 +105,6 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         key = f"{symbol}_{timeframe}"
         last_signal = last_notifications.get(key)
 
-        # Atualizar Streamlit
         if current_signal and current_signal != last_signal:
             message = (
                 f"Sinal de {current_signal} para {symbol} no timeframe {timeframe}:\n"
@@ -121,12 +129,11 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
 
         await asyncio.sleep(60)
 
-# ---------------- Streamlit ---------------- #
+# ---------------- Streamlit Interface ---------------- #
 
 st.title("Robô de Notificação com Gráficos em Tempo Real (Yahoo Finance)")
 st.write("Monitoramento de múltiplos símbolos e timeframes com indicadores técnicos em tempo real.")
 
-# Seleção de símbolos
 all_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOTUSDT", "DOGEUSDT", "FTMUSDT", "ASTRUSDT", "XRPUSDT", "SOLUSDT", 
                "LTCUSDT", "PENDLEUSDT", "AAVEUSDT", "ORDIUSDT", "UNIUSDT", "LINKUSDT", 
                "ENSUSDT", "MOVRUSDT", "ARBUSDT", "TRBUSDT", "MANTAUSDT", "AVAXUSDT", "ADAUSDT", "GALAUSDT","LDOUSDT"]
