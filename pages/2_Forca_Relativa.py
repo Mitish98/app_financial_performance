@@ -15,8 +15,10 @@ load_dotenv()
 telegram_bot_token = os.getenv("telegram_bot_token")
 telegram_chat_id = os.getenv("telegram_chat_id")
 
-# Funções auxiliares
+# ---------------- Funções auxiliares ---------------- #
+
 def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
+    df = df.copy()
     df['SMA'] = df['Close'].rolling(window=num_periods).mean()
     df['std_dev'] = df['Close'].rolling(window=num_periods).std()
     df['upper_band'] = df['SMA'] + (std_dev_factor * df['std_dev'])
@@ -24,9 +26,11 @@ def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
     return df
 
 def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
+    df = df.copy()
     df['L14'] = df['Low'].rolling(window=k_period).min()
     df['H14'] = df['High'].rolling(window=k_period).max()
-    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14'])) * 100
+    # Evitar divisão por zero
+    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14']).replace(0,1)) * 100
     df['%D'] = df['%K'].rolling(window=d_period).mean()
     return df
 
@@ -68,6 +72,7 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
             await asyncio.sleep(5)
             continue
 
+        # Indicadores
         df = calculate_bollinger_bands(df)
         df = calculate_stochastic_oscillator(df)
         rsi_indicator = RSIIndicator(df['Close'], window=14)
@@ -81,30 +86,17 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         volume_ma = df['Volume'].rolling(window=21).mean().iloc[-1]
         high_volume = df['Volume'].iloc[-1] > 3 * volume_ma
 
+        # Determinar sinal
         current_signal = None
-        if (
-            current_price < lower_band and 
-            stochastic_k < 20 and 
-            stochastic_d < 20 and 
-            high_volume and 
-            rsi < 30 and
-            signal_choice in ["Compra", "Ambos"]
-        ):
+        if current_price < lower_band and stochastic_k < 20 and stochastic_d < 20 and high_volume and rsi < 30 and signal_choice in ["Compra", "Ambos"]:
             current_signal = "COMPRA"
-        elif (
-            current_price > upper_band and 
-            stochastic_k > 80 and 
-            stochastic_d > 80 and 
-            high_volume and 
-            rsi > 70 and
-            signal_choice in ["Venda", "Ambos"]
-        ):
+        elif current_price > upper_band and stochastic_k > 80 and stochastic_d > 80 and high_volume and rsi > 70 and signal_choice in ["Venda", "Ambos"]:
             current_signal = "VENDA"
 
         key = f"{symbol}_{timeframe}"
         last_signal = last_notifications.get(key)
 
-        # Atualizar informações no Streamlit
+        # Atualizar Streamlit
         if current_signal and current_signal != last_signal:
             message = (
                 f"Sinal de {current_signal} para {symbol} no timeframe {timeframe}:\n"
@@ -119,7 +111,7 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         else:
             placeholder.write(f"{symbol} [{timeframe}] - Preço atual: {current_price:.2f}")
 
-        # Criar gráfico Plotly
+        # Gráfico Plotly
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close', line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=df.index, y=df['upper_band'], mode='lines', name='Upper Band', line=dict(color='red', dash='dash')))
@@ -129,11 +121,12 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
 
         await asyncio.sleep(60)
 
-# Streamlit
+# ---------------- Streamlit ---------------- #
+
 st.title("Robô de Notificação com Gráficos em Tempo Real (Yahoo Finance)")
 st.write("Monitoramento de múltiplos símbolos e timeframes com indicadores técnicos em tempo real.")
 
-# Seleção do usuário
+# Seleção de símbolos
 all_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOTUSDT", "DOGEUSDT", "FTMUSDT", "ASTRUSDT", "XRPUSDT", "SOLUSDT", 
                "LTCUSDT", "PENDLEUSDT", "AAVEUSDT", "ORDIUSDT", "UNIUSDT", "LINKUSDT", 
                "ENSUSDT", "MOVRUSDT", "ARBUSDT", "TRBUSDT", "MANTAUSDT", "AVAXUSDT", "ADAUSDT", "GALAUSDT","LDOUSDT"]
