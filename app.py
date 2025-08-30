@@ -71,14 +71,14 @@ with st.spinner("📊 Carregando dados..."):
 # -------------------------
 # Layout com Tabs
 # -------------------------
-tab1, tab2, tab3 = st.tabs(["📊 Rankings","💪 Força Relativa", "📈 Correlação"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Rankings","💪 Força Relativa", "📈 Correlação", "🧠 IA" ])
 # -------------------------
 # -------------------------
 # -------------------------
 # TAB 1: Rankings
 # -------------------------
 with tab1:
-    st.header("📊 Top Performers e Perdedores")
+    st.header("📊 Top Ganhadores e Perdedores")
     
 
     last_date_rs = df_prices["Date"].max()
@@ -257,28 +257,31 @@ with tab2:
     st.plotly_chart(fig_rs, use_container_width=True)
 
 # -------------------------
+# -------------------------
 # TAB 3: Correlação
 # -------------------------
 with tab3:
     st.header("📈 Análise de Correlação entre Ativos")
-    available_windows_corr = sorted(df_corr["Window"].unique())
-    selected_window_corr = st.selectbox("🕓 Janela da correlação móvel:", available_windows_corr, key="window_corr")
-    df_corr_window = df_corr[df_corr["Window"] == selected_window_corr]
-
+    
+    # Função para listar ativos únicos
     def get_unique_assets(df):
         assets = set()
         for pair in df["Pair"].unique():
             assets.update(pair.split("/"))
         return sorted(list(assets))
 
-    assets = get_unique_assets(df_corr_window)
-    selected_assets = st.multiselect("🔍 Selecionar ativos:", assets, default=assets[:5])
+    assets = get_unique_assets(df_corr)
+
+    # Multiselect de ativos para filtrar pares da tabela
+    default_assets = [a for a in ["BTC-USD", "ETH-USD"] if a in assets]
+    selected_assets = st.multiselect("🔍 Selecionar ativos para filtrar a tabela:", assets, default=default_assets)
 
     if selected_assets:
-        df_filtered_corr = df_corr_window[df_corr_window["Pair"].apply(lambda x: any(a in x for a in selected_assets))]
+        df_filtered_corr = df_corr[df_corr["Pair"].apply(lambda x: any(a in x for a in selected_assets))]
     else:
-        df_filtered_corr = df_corr_window.copy()
+        df_filtered_corr = df_corr.copy()
 
+    # Tabela de correlações atuais
     last_date_corr = df_filtered_corr["Date"].max()
     df_latest_corr = df_filtered_corr[df_filtered_corr["Date"] == last_date_corr].dropna(subset=["RollingCorrelation"])
 
@@ -289,6 +292,112 @@ with tab3:
     with col2:
         st.markdown("#### 🔻 Top Correlações Negativas")
         st.dataframe(df_latest_corr.sort_values("RollingCorrelation", ascending=True).head(10)[["Pair","RollingCorrelation"]])
+
+    # -------------------------
+    # Gráfico de correlação móvel do par selecionado
+    st.markdown("### 📊 Gráfico da Correlação Móvel")
+
+    # Seleção do par para plot
+    available_pairs_plot = sorted(df_filtered_corr["Pair"].unique())
+    default_pair = "BTC-USD/ETH-USD" if "BTC-USD/ETH-USD" in available_pairs_plot else available_pairs_plot[0]
+    selected_pair_plot = st.selectbox(
+        "Escolha o par para visualizar a correlação:", 
+        available_pairs_plot, 
+        index=available_pairs_plot.index(default_pair)
+    )
+
+    # Janela da correlação móvel aplicada **ao gráfico**
+    available_windows_plot = sorted(df_filtered_corr["Window"].unique())
+    selected_window_corr = st.selectbox(
+        "🕓 Janela da correlação móvel:",
+        available_windows_plot,
+        index=0  # ou você pode definir um default específico
+    )
+
+    # Filtra os dados para o gráfico
+    df_pair_plot = df_filtered_corr[
+        (df_filtered_corr["Pair"] == selected_pair_plot) & 
+        (df_filtered_corr["Window"] == selected_window_corr)
+    ]
+
+    if not df_pair_plot.empty:
+        fig_corr_line = px.line(
+            df_pair_plot,
+            x="Date",
+            y="RollingCorrelation",
+            title=f"Correlação Móvel - {selected_pair_plot} ({selected_window_corr} dias)",
+            labels={"RollingCorrelation":"Correlação"}
+        )
+        fig_corr_line.update_layout(height=400)
+        st.plotly_chart(fig_corr_line, use_container_width=True)
+
+
+with tab4:
+    st.header("🤖 Agente de IA para análise de ativos")
+
+    # Multiselect para escolher ativos, com BTC-USD e ETH-USD como padrão
+    default_ai_tickers = [t for t in ["BTC-USD", "ETH-USD"] if t in df_prices["Ticker"].unique()]
+    selected_tickers_ai = st.multiselect(
+        "Escolha um ou mais ativos para análise comparativa:",
+        df_prices["Ticker"].unique(),
+        default=default_ai_tickers
+    )
+    
+    # Período
+    days_ai = st.slider("Número de dias para análise:", 3, 90, 30)
+
+    if selected_tickers_ai:
+        last_date_ai = df_prices["Date"].max()
+        start_date_ai = last_date_ai - pd.Timedelta(days=days_ai)
+        df_ai_period = df_prices[(df_prices["Date"] >= start_date_ai) & (df_prices["Date"] <= last_date_ai)]
+
+        # Filtra os ativos selecionados
+        df_ai_selected = df_ai_period[df_ai_period["Ticker"].isin(selected_tickers_ai)]
+
+        st.markdown(f"Analisando **{', '.join(selected_tickers_ai)}** nos últimos **{days_ai} dias**...")
+
+        # Botão para gerar análise
+        if st.button("💡 Gerar Insights com IA"):
+            with st.spinner("Consultando agente de IA..."):
+                import openai
+
+                # Preparar prompt com todos os ativos
+                prompt = f"""
+                Tenho os seguintes dados para os ativos {', '.join(selected_tickers_ai)}:
+                {df_ai_selected[['Ticker','Date','Price','Volume','RSI']].tail(10).to_dict(orient='records')}
+
+                Forneça uma análise resumida comparativa indicando:
+                - Tendências recentes de cada ativo
+                - Possíveis pontos de sobrecompra ou sobrevenda
+                - Sinais de alerta para operações de curto prazo
+                - Recomendações comparativas entre os ativos
+                """
+
+                response = openai.ChatCompletion.create(
+                    model="gpt-5-mini",
+                    messages=[{"role":"user", "content": prompt}],
+                    temperature=0.7,
+                    max_tokens=400
+                )
+
+                st.markdown("### 🔹 Insights do Agente de IA")
+                st.write(response['choices'][0]['message']['content'])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
