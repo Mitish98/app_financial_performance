@@ -13,10 +13,8 @@ load_dotenv()
 telegram_bot_token = os.getenv("telegram_bot_token")
 telegram_chat_id = os.getenv("telegram_chat_id")
 
-# ---------------- Funções de indicadores ---------------- #
-
+# Funções de indicadores
 def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
-    df = df.copy()
     df['SMA'] = df['Close'].rolling(window=num_periods).mean()
     df['std_dev'] = df['Close'].rolling(window=num_periods).std()
     df['upper_band'] = df['SMA'] + (std_dev_factor * df['std_dev'])
@@ -24,33 +22,19 @@ def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
     return df
 
 def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
-    df = df.copy()
-    
-    # Se MultiIndex, achatar
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    
-    for col in ['Close', 'High', 'Low']:
-        if col not in df.columns:
-            raise ValueError(f"Coluna {col} não encontrada no DataFrame")
-    
     df['L14'] = df['Low'].rolling(window=k_period).min()
     df['H14'] = df['High'].rolling(window=k_period).max()
-    
-    close = df['Close'].squeeze()
-    L14 = df['L14'].squeeze()
-    H14 = df['H14'].squeeze()
-    
-    df['%K'] = ((close - L14) / (H14 - L14).replace(0,1)) * 100
+    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14'])) * 100
     df['%D'] = df['%K'].rolling(window=d_period).mean()
-    
     return df
 
-# ---------------- Funções de dados e notificações ---------------- #
-
+# Função para buscar dados do Yahoo Finance
 async def fetch_ticker_and_candles(symbol, timeframe):
     yf_symbol = symbol.replace("USDT", "-USD")
-    interval_mapping = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m", "4h": "4h", "1d": "1d"}
+    interval_mapping = {
+        "1m": "1m", "5m": "5m", "15m": "15m",
+        "1h": "60m", "4h": "4h", "1d": "1d"
+    }
     interval = interval_mapping.get(timeframe, "1m")
     period = "7d" if interval in ["1m", "5m", "15m", "60m"] else "60d"
 
@@ -64,6 +48,7 @@ async def fetch_ticker_and_candles(symbol, timeframe):
         st.error(f"Erro ao obter dados de {symbol} no timeframe {timeframe}: {e}")
         return None, None
 
+# Função para enviar mensagens no Telegram
 async def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
     payload = {"chat_id": telegram_chat_id, "text": message}
@@ -73,9 +58,10 @@ async def send_telegram_message(message):
     except requests.exceptions.RequestException as e:
         st.error(f"Erro ao enviar mensagem para o Telegram: {e}")
 
-# ---------------- Controle de notificações ---------------- #
+# Controle de notificações
 last_notifications = {}
 
+# Função principal de notificação
 async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder, chart_placeholder):
     while True:
         current_price, df = await fetch_ticker_and_candles(symbol, timeframe)
@@ -88,6 +74,7 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         rsi_indicator = RSIIndicator(df['Close'], window=14)
         df['rsi'] = rsi_indicator.rsi()
 
+        # Garantir valores escalares
         upper_band = df['upper_band'].iloc[-1]
         lower_band = df['lower_band'].iloc[-1]
         stochastic_k = df['%K'].iloc[-1]
@@ -96,16 +83,19 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         volume_ma = df['Volume'].rolling(window=21).mean().iloc[-1]
         high_volume = df['Volume'].iloc[-1] > 3 * volume_ma
 
+        # Determinar sinal
         current_signal = None
         if current_price < lower_band and stochastic_k < 20 and stochastic_d < 20 and high_volume and rsi < 30 and signal_choice in ["Compra", "Ambos"]:
             current_signal = "COMPRA"
         elif current_price > upper_band and stochastic_k > 80 and stochastic_d > 80 and high_volume and rsi > 70 and signal_choice in ["Venda", "Ambos"]:
             current_signal = "VENDA"
 
+        # Comparar com último sinal
         key = f"{symbol}_{timeframe}"
-        last_signal = last_notifications.get(key)
+        last_signal = last_notifications.get(key, None)
 
-        if current_signal and current_signal != last_signal:
+        # Atualizar Streamlit e Telegram
+        if current_signal is not None and current_signal != last_signal:
             message = (
                 f"Sinal de {current_signal} para {symbol} no timeframe {timeframe}:\n"
                 f"Preço atual: {current_price:.2f}\n"
@@ -129,11 +119,11 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
 
         await asyncio.sleep(60)
 
-# ---------------- Streamlit Interface ---------------- #
-
+# Streamlit
 st.title("Robô de Notificação com Gráficos em Tempo Real (Yahoo Finance)")
 st.write("Monitoramento de múltiplos símbolos e timeframes com indicadores técnicos em tempo real.")
 
+# Seleção de pares e timeframes
 all_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOTUSDT", "DOGEUSDT", "FTMUSDT", "ASTRUSDT", "XRPUSDT", "SOLUSDT", 
                "LTCUSDT", "PENDLEUSDT", "AAVEUSDT", "ORDIUSDT", "UNIUSDT", "LINKUSDT", 
                "ENSUSDT", "MOVRUSDT", "ARBUSDT", "TRBUSDT", "MANTAUSDT", "AVAXUSDT", "ADAUSDT", "GALAUSDT","LDOUSDT"]
@@ -144,6 +134,7 @@ timeframes = st.sidebar.multiselect("Selecione o(s) timeframe(s)", ["1m", "5m", 
 notify_telegram = st.sidebar.checkbox("Enviar notificações no Telegram", value=False)
 signal_choice = st.sidebar.radio("Selecione os sinais desejados", ["Compra", "Venda", "Ambos"], index=2)
 
+# Botão para iniciar monitoramento
 if st.sidebar.button("Iniciar Monitoramento"):
     if not symbols or not timeframes:
         st.error("Selecione pelo menos um par de moedas e um timeframe.")
