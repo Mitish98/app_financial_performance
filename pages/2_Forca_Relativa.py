@@ -1,153 +1,102 @@
-import streamlit as st
 import asyncio
 import pandas as pd
-import requests
-from ta.momentum import RSIIndicator
-from dotenv import load_dotenv
-import os
 import yfinance as yf
-import plotly.graph_objects as go
+import streamlit as st
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
 
-# Carregar variáveis de ambiente
-load_dotenv()
-telegram_bot_token = os.getenv("telegram_bot_token")
-telegram_chat_id = os.getenv("telegram_chat_id")
+st.set_page_config(page_title="Força Relativa", layout="wide")
 
+# ---------------------------
 # Funções de indicadores
-def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
-    df['SMA'] = df['Close'].rolling(window=num_periods).mean()
-    df['std_dev'] = df['Close'].rolling(window=num_periods).std()
-    df['upper_band'] = df['SMA'] + (std_dev_factor * df['std_dev'])
-    df['lower_band'] = df['SMA'] - (std_dev_factor * df['std_dev'])
+# ---------------------------
+def calculate_bollinger_bands(df, window=20, n_std=2):
+    if df.empty or len(df) < window:
+        df['upper_band'] = pd.Series(dtype=float)
+        df['lower_band'] = pd.Series(dtype=float)
+        return df
+    indicator_bb = BollingerBands(close=df['Close'], window=window, window_dev=n_std)
+    df['upper_band'] = indicator_bb.bollinger_hband()
+    df['lower_band'] = indicator_bb.bollinger_lband()
     return df
 
 def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
+    if df.empty or len(df) < k_period:
+        df['%K'] = pd.Series(dtype=float)
+        df['%D'] = pd.Series(dtype=float)
+        return df
+
     df['L14'] = df['Low'].rolling(window=k_period).min()
     df['H14'] = df['High'].rolling(window=k_period).max()
-    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14'])) * 100
+    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14'])).astype(float)
     df['%D'] = df['%K'].rolling(window=d_period).mean()
     return df
 
-# Função para buscar dados do Yahoo Finance
-async def fetch_ticker_and_candles(symbol, timeframe):
+# ---------------------------
+# Função para buscar dados
+# ---------------------------
+async def fetch_ticker_and_candles(symbol, timeframe, period="7d"):
     yf_symbol = symbol.replace("USDT", "-USD")
-    interval_mapping = {
-        "1m": "1m", "5m": "5m", "15m": "15m",
-        "1h": "60m", "4h": "4h", "1d": "1d"
-    }
-    interval = interval_mapping.get(timeframe, "1m")
-    period = "7d" if interval in ["1m", "5m", "15m", "60m"] else "60d"
-
     try:
-        df = yf.download(yf_symbol, interval=interval, period=period, progress=False)
+        df = yf.download(yf_symbol, interval=timeframe, period=period, progress=False)
         if df.empty:
-            raise ValueError("Nenhum dado retornado do Yahoo Finance")
+            st.warning(f"No data for {yf_symbol}. Skipping...")
+            return None, None
         current_price = df['Close'].iloc[-1]
         return current_price, df
     except Exception as e:
-        st.error(f"Erro ao obter dados de {symbol} no timeframe {timeframe}: {e}")
+        st.warning(f"Error fetching {yf_symbol}: {e}")
         return None, None
 
-# Função para enviar mensagens no Telegram
-async def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage"
-    payload = {"chat_id": telegram_chat_id, "text": message}
-    try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Erro ao enviar mensagem para o Telegram: {e}")
+# ---------------------------
+# Função principal de sinais
+# ---------------------------
+async def notify_conditions(symbol, timeframe):
+    current_price, df = await fetch_ticker_and_candles(symbol, timeframe)
+    if df is None or df.empty:
+        return
 
-# Controle de notificações
-last_notifications = {}
+    # Calcular indicadores
+    df = calculate_bollinger_bands(df)
+    df = calculate_stochastic_oscillator(df)
+    rsi_indicator = RSIIndicator(df['Close'], window=14)
+    df['rsi'] = rsi_indicator.rsi()
 
-# Função principal de notificação
-async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder, chart_placeholder):
-    while True:
-        current_price, df = await fetch_ticker_and_candles(symbol, timeframe)
-        if df is None:
-            await asyncio.sleep(5)
-            continue
+    # Últimos valores
+    upper_band = df['upper_band'].iloc[-1]
+    lower_band = df['lower_band'].iloc[-1]
+    stochastic_k = df['%K'].iloc[-1] if not df['%K'].empty else None
+    stochastic_d = df['%D'].iloc[-1] if not df['%D'].empty else None
+    rsi = df['rsi'].iloc[-1] if not df['rsi'].empty else None
 
-        df = calculate_bollinger_bands(df)
-        df = calculate_stochastic_oscillator(df)
-        rsi_indicator = RSIIndicator(df['Close'], window=14)
-        df['rsi'] = rsi_indicator.rsi()
+    # Determinar sinal (exemplo simples)
+    signal = None
+    if stochastic_k is not None and stochastic_d is not None:
+        if stochastic_k > stochastic_d and current_price < lower_band:
+            signal = "Compra"
+        elif stochastic_k < stochastic_d and current_price > upper_band:
+            signal = "Venda"
 
-        # Garantir valores escalares
-        upper_band = df['upper_band'].iloc[-1]
-        lower_band = df['lower_band'].iloc[-1]
-        stochastic_k = df['%K'].iloc[-1]
-        stochastic_d = df['%D'].iloc[-1]
-        rsi = df['rsi'].iloc[-1]
-        volume_ma = df['Volume'].rolling(window=21).mean().iloc[-1]
-        high_volume = df['Volume'].iloc[-1] > 3 * volume_ma
+    # Atualizar Streamlit
+    chart_placeholder = st.empty()
+    with chart_placeholder.container():
+        st.write(f"**{symbol} ({timeframe})** - Preço: {current_price:.2f}")
+        st.write(f"RSI: {rsi:.2f if rsi else 'N/A'}, %K: {stochastic_k:.2f if stochastic_k else 'N/A'}, %D: {stochastic_d:.2f if stochastic_d else 'N/A'}")
+        st.write(f"Bollinger Bands -> Superior: {upper_band:.2f}, Inferior: {lower_band:.2f}")
+        st.write(f"Sinal: {signal if signal else 'Sem sinal'}")
 
-        # Determinar sinal
-        current_signal = None
-        if current_price < lower_band and stochastic_k < 20 and stochastic_d < 20 and high_volume and rsi < 30 and signal_choice in ["Compra", "Ambos"]:
-            current_signal = "COMPRA"
-        elif current_price > upper_band and stochastic_k > 80 and stochastic_d > 80 and high_volume and rsi > 70 and signal_choice in ["Venda", "Ambos"]:
-            current_signal = "VENDA"
+# ---------------------------
+# Loop principal
+# ---------------------------
+symbols = ["BTCUSDT", "ETHUSDT", "UNIUSDT", "FTMUSDT"]  # Exemplo
+timeframes = ["1h", "4h"]
 
-        # Comparar com último sinal
-        key = f"{symbol}_{timeframe}"
-        last_signal = last_notifications.get(key, None)
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+tasks = []
 
-        # Atualizar Streamlit e Telegram
-        if current_signal is not None and current_signal != last_signal:
-            message = (
-                f"Sinal de {current_signal} para {symbol} no timeframe {timeframe}:\n"
-                f"Preço atual: {current_price:.2f}\n"
-                f"RSI: {rsi:.2f}, Stochastic K: {stochastic_k:.2f}, Stochastic D: {stochastic_d:.2f}\n"
-                f"Upper Band: {upper_band:.2f}, Lower Band: {lower_band:.2f}, Volume: {df['Volume'].iloc[-1]:.2f}\n"
-            )
-            placeholder.info(message)
-            if notify_telegram:
-                await send_telegram_message(message)
-            last_notifications[key] = current_signal
-        else:
-            placeholder.write(f"{symbol} [{timeframe}] - Preço atual: {current_price:.2f}")
+for symbol in symbols:
+    for timeframe in timeframes:
+        tasks.append(notify_conditions(symbol, timeframe))
 
-        # Gráfico Plotly
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close', line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['upper_band'], mode='lines', name='Upper Band', line=dict(color='red', dash='dash')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['lower_band'], mode='lines', name='Lower Band', line=dict(color='green', dash='dash')))
-        fig.update_layout(title=f"{symbol} - {timeframe}", height=400, margin=dict(l=0,r=0,t=30,b=0))
-        chart_placeholder.plotly_chart(fig, use_container_width=True)
-
-        await asyncio.sleep(60)
-
-# Streamlit
-st.title("Robô de Notificação com Gráficos em Tempo Real (Yahoo Finance)")
-st.write("Monitoramento de múltiplos símbolos e timeframes com indicadores técnicos em tempo real.")
-
-# Seleção de pares e timeframes
-all_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOTUSDT", "DOGEUSDT", "FTMUSDT", "ASTRUSDT", "XRPUSDT", "SOLUSDT", 
-               "LTCUSDT", "PENDLEUSDT", "AAVEUSDT", "ORDIUSDT", "UNIUSDT", "LINKUSDT", 
-               "ENSUSDT", "MOVRUSDT", "ARBUSDT", "TRBUSDT", "MANTAUSDT", "AVAXUSDT", "ADAUSDT", "GALAUSDT","LDOUSDT"]
-
-select_all = st.sidebar.checkbox("Selecionar todos os pares")
-symbols = st.sidebar.multiselect("Selecione os pares de moedas", all_symbols, default=all_symbols if select_all else [])
-timeframes = st.sidebar.multiselect("Selecione o(s) timeframe(s)", ["1m", "5m", "15m", "1h", "4h", "1d"])
-notify_telegram = st.sidebar.checkbox("Enviar notificações no Telegram", value=False)
-signal_choice = st.sidebar.radio("Selecione os sinais desejados", ["Compra", "Venda", "Ambos"], index=2)
-
-# Botão para iniciar monitoramento
-if st.sidebar.button("Iniciar Monitoramento"):
-    if not symbols or not timeframes:
-        st.error("Selecione pelo menos um par de moedas e um timeframe.")
-    else:
-        st.success("Monitoramento iniciado! Gráficos e sinais atualizados a cada minuto.")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        tasks = []
-        for symbol in symbols:
-            for timeframe in timeframes:
-                placeholder = st.empty()
-                chart_placeholder = st.empty()
-                tasks.append(notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder, chart_placeholder))
-
-        loop.run_until_complete(asyncio.gather(*tasks))
+loop.run_until_complete(asyncio.gather(*tasks))
