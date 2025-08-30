@@ -1,58 +1,51 @@
 import streamlit as st
 import asyncio
-from binance.client import Client
 import pandas as pd
 import requests
 from ta.momentum import RSIIndicator
 from dotenv import load_dotenv
 import os
+import yfinance as yf
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# Importando credenciais
-api_key_spot = os.getenv("api_key_spot")
-api_secret_spot = os.getenv("api_secret_spot")
+# Importando credenciais Telegram
 telegram_bot_token = os.getenv("telegram_bot_token")
 telegram_chat_id = os.getenv("telegram_chat_id")
 
-# Inicializando o cliente Binance
-client = Client(api_key_spot, api_secret_spot)
-
 # Funções auxiliares
 def calculate_bollinger_bands(df, num_periods=21, std_dev_factor=2):
-    df['SMA'] = df['close'].rolling(window=num_periods).mean()
-    df['std_dev'] = df['close'].rolling(window=num_periods).std()
+    df['SMA'] = df['Close'].rolling(window=num_periods).mean()
+    df['std_dev'] = df['Close'].rolling(window=num_periods).std()
     df['upper_band'] = df['SMA'] + (std_dev_factor * df['std_dev'])
     df['lower_band'] = df['SMA'] - (std_dev_factor * df['std_dev'])
     return df
 
 def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
-    df['L14'] = df['low'].rolling(window=k_period).min()
-    df['H14'] = df['high'].rolling(window=k_period).max()
-    df['%K'] = ((df['close'] - df['L14']) / (df['H14'] - df['L14'])) * 100
+    df['L14'] = df['Low'].rolling(window=k_period).min()
+    df['H14'] = df['High'].rolling(window=k_period).max()
+    df['%K'] = ((df['Close'] - df['L14']) / (df['H14'] - df['L14'])) * 100
     df['%D'] = df['%K'].rolling(window=d_period).mean()
     return df
 
 async def fetch_ticker_and_candles(symbol, timeframe):
+    """Pega dados históricos do Yahoo Finance e o último preço."""
+    yf_symbol = symbol.replace("USDT", "-USD")  # Ex: BTCUSDT -> BTC-USD
+    interval_mapping = {
+        "1m": "1m", "5m": "5m", "15m": "15m",
+        "1h": "60m", "4h": "4h", "1d": "1d"
+    }
+    interval = interval_mapping.get(timeframe, "1m")
+    period = "7d" if interval in ["1m", "5m", "15m", "60m"] else "60d"
+
     try:
-        candles = client.get_klines(symbol=symbol, interval=timeframe, limit=50)
-        df = pd.DataFrame(candles, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 
-                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        df = yf.download(yf_symbol, interval=interval, period=period, progress=False)
+        if df.empty:
+            raise ValueError("Nenhum dado retornado do Yahoo Finance")
         
-        # Convertendo para os tipos corretos
-        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
-        df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
-        df['open'] = df['open'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
-
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        current_price = float(ticker['price'])
-
+        current_price = df['Close'].iloc[-1]
+        df = df.rename(columns={"Open": "Open", "High": "High", "Low": "Low", "Close": "Close", "Volume": "Volume"})
         return current_price, df
     except Exception as e:
         st.error(f"Erro ao obter dados de {symbol} no timeframe {timeframe}: {e}")
@@ -71,7 +64,6 @@ async def send_telegram_message(message):
 last_notifications = {}
 
 async def notify_conditions(symbol, timeframes, notify_telegram, signal_choice):
-    """Envia notificações com controle de repetição."""
     while True:
         for timeframe in timeframes:
             current_price, df = await fetch_ticker_and_candles(symbol, timeframe)
@@ -82,7 +74,7 @@ async def notify_conditions(symbol, timeframes, notify_telegram, signal_choice):
             # Indicadores
             df = calculate_bollinger_bands(df)
             df = calculate_stochastic_oscillator(df)
-            rsi_indicator = RSIIndicator(df['close'], window=14)
+            rsi_indicator = RSIIndicator(df['Close'], window=14)
             df['rsi'] = rsi_indicator.rsi()
 
             upper_band = df['upper_band'].iloc[-1]
@@ -90,12 +82,9 @@ async def notify_conditions(symbol, timeframes, notify_telegram, signal_choice):
             stochastic_k = df['%K'].iloc[-1]
             stochastic_d = df['%D'].iloc[-1]
             rsi = df['rsi'].iloc[-1]
-            volume_ma = df['volume'].rolling(window=21).mean().iloc[-1]  # Média móvel de volume
+            volume_ma = df['Volume'].rolling(window=21).mean().iloc[-1]  # Média móvel de volume
+            high_volume = df['Volume'].iloc[-1] > 3 * volume_ma  # Novo critério: volume > 3x média
 
-            # Novo critério: volume > 100% acima da média (2x a média)
-            high_volume = df['volume'].iloc[-1] > 3 * volume_ma
-
-            # Determinar sinal atual
             current_signal = None
             if (
                 current_price < lower_band and 
@@ -116,7 +105,6 @@ async def notify_conditions(symbol, timeframes, notify_telegram, signal_choice):
             ):
                 current_signal = "VENDA"
 
-            # Evitar notificações repetidas
             key = f"{symbol}_{timeframe}"
             last_signal = last_notifications.get(key)
 
@@ -133,7 +121,7 @@ async def notify_conditions(symbol, timeframes, notify_telegram, signal_choice):
             await asyncio.sleep(60)
 
 # Configuração do Streamlit
-st.title("Robô de Notificação para Criptomoedas")
+st.title("Robô de Notificação para Criptomoedas (Yahoo Finance)")
 st.write("O sistema utiliza uma combinação de indicadores técnicos para gerar sinais de compra e venda.")
 
 # Entrada do usuário
