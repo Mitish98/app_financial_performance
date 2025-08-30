@@ -6,6 +6,7 @@ from ta.momentum import RSIIndicator
 from dotenv import load_dotenv
 import os
 import yfinance as yf
+import plotly.graph_objects as go
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -30,7 +31,6 @@ def calculate_stochastic_oscillator(df, k_period=14, d_period=3):
     return df
 
 async def fetch_ticker_and_candles(symbol, timeframe):
-    """Pega dados históricos do Yahoo Finance e o último preço."""
     yf_symbol = symbol.replace("USDT", "-USD")  # BTCUSDT -> BTC-USD
     interval_mapping = {
         "1m": "1m", "5m": "5m", "15m": "15m",
@@ -58,17 +58,16 @@ async def send_telegram_message(message):
     except requests.exceptions.RequestException as e:
         st.error(f"Erro ao enviar mensagem para o Telegram: {e}")
 
-# Controle de notificações para evitar repetições
+# Controle de notificações
 last_notifications = {}
 
-async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder):
+async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder, chart_placeholder):
     while True:
         current_price, df = await fetch_ticker_and_candles(symbol, timeframe)
         if df is None:
             await asyncio.sleep(5)
             continue
 
-        # Indicadores
         df = calculate_bollinger_bands(df)
         df = calculate_stochastic_oscillator(df)
         rsi_indicator = RSIIndicator(df['Close'], window=14)
@@ -82,7 +81,6 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         volume_ma = df['Volume'].rolling(window=21).mean().iloc[-1]
         high_volume = df['Volume'].iloc[-1] > 3 * volume_ma
 
-        # Determinar sinal
         current_signal = None
         if (
             current_price < lower_band and 
@@ -106,6 +104,7 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
         key = f"{symbol}_{timeframe}"
         last_signal = last_notifications.get(key)
 
+        # Atualizar informações no Streamlit
         if current_signal and current_signal != last_signal:
             message = (
                 f"Sinal de {current_signal} para {symbol} no timeframe {timeframe}:\n"
@@ -118,16 +117,23 @@ async def notify_conditions(symbol, timeframe, notify_telegram, signal_choice, p
                 await send_telegram_message(message)
             last_notifications[key] = current_signal
         else:
-            # Atualiza valor atual mesmo sem sinal
             placeholder.write(f"{symbol} [{timeframe}] - Preço atual: {current_price:.2f}")
+
+        # Criar gráfico Plotly
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close', line=dict(color='blue')))
+        fig.add_trace(go.Scatter(x=df.index, y=df['upper_band'], mode='lines', name='Upper Band', line=dict(color='red', dash='dash')))
+        fig.add_trace(go.Scatter(x=df.index, y=df['lower_band'], mode='lines', name='Lower Band', line=dict(color='green', dash='dash')))
+        fig.update_layout(title=f"{symbol} - {timeframe}", height=400, margin=dict(l=0,r=0,t=30,b=0))
+        chart_placeholder.plotly_chart(fig, use_container_width=True)
 
         await asyncio.sleep(60)
 
-# Configuração do Streamlit
-st.title("Robô de Notificação para Criptomoedas (Yahoo Finance Async)")
+# Streamlit
+st.title("Robô de Notificação com Gráficos em Tempo Real (Yahoo Finance)")
 st.write("Monitoramento de múltiplos símbolos e timeframes com indicadores técnicos em tempo real.")
 
-# Entrada do usuário
+# Seleção do usuário
 all_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "DOTUSDT", "DOGEUSDT", "FTMUSDT", "ASTRUSDT", "XRPUSDT", "SOLUSDT", 
                "LTCUSDT", "PENDLEUSDT", "AAVEUSDT", "ORDIUSDT", "UNIUSDT", "LINKUSDT", 
                "ENSUSDT", "MOVRUSDT", "ARBUSDT", "TRBUSDT", "MANTAUSDT", "AVAXUSDT", "ADAUSDT", "GALAUSDT","LDOUSDT"]
@@ -142,15 +148,15 @@ if st.sidebar.button("Iniciar Monitoramento"):
     if not symbols or not timeframes:
         st.error("Selecione pelo menos um par de moedas e um timeframe.")
     else:
-        st.success("Monitoramento iniciado! Atualizações em tempo real abaixo:")
+        st.success("Monitoramento iniciado! Gráficos e sinais atualizados a cada minuto.")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Criar placeholders para cada par/timeframe
         tasks = []
         for symbol in symbols:
             for timeframe in timeframes:
                 placeholder = st.empty()
-                tasks.append(notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder))
+                chart_placeholder = st.empty()
+                tasks.append(notify_conditions(symbol, timeframe, notify_telegram, signal_choice, placeholder, chart_placeholder))
 
         loop.run_until_complete(asyncio.gather(*tasks))
