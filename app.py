@@ -6,6 +6,9 @@ from sqlalchemy import create_engine
 import subprocess
 import sys
 from datetime import datetime
+import joblib
+import numpy as np
+from update_data.logistic_regression import load_model, get_latest_features, predict_probability
 
 # -------------------------
 # Configuração inicial
@@ -35,6 +38,29 @@ last_update_perf = get_last_update(engine_rs, "asset_prices")
 last_update_dt = datetime.fromisoformat(str(last_update_perf).split('.')[0])  # converte string para datetime
 
 st.title(f"📊 Painel de Análises Financeiras")
+# -------------------------
+# Botão de atualização
+# -------------------------
+if st.button("🔁 Atualizar Todos os Dados"):
+    # Atualizar Correlações
+    with st.spinner("Executando script de correlação..."):
+        result_corr = subprocess.run([sys.executable, "update_data/correlation.py"])
+    if result_corr.returncode == 0:
+        st.success("✅ Correlações atualizadas com sucesso.")
+    else:
+        st.error("❌ Erro ao atualizar correlações.")
+
+    # Atualizar Preços e Indicadores
+    with st.spinner("Executando script de força relativa..."):
+        result_rs = subprocess.run([sys.executable, "update_data/rs.py"])
+    if result_rs.returncode == 0:
+        st.success("✅ Força relativa atualizada com sucesso.")
+    else:
+        st.error("❌ Erro ao atualizar força relativa.")
+
+    # Mensagem geral de sucesso
+    if result_corr.returncode == 0 and result_rs.returncode == 0:
+        st.success("🎉 Todos os dados foram atualizados com sucesso!")
 st.header(f"Última atualização: {last_update_dt.strftime('%d/%m/%Y')}")
 # Seleção de período
 period_options = {"Últimos 3 dias":3,"Últimos 7 dias":7,"Últimos 21 dias":21,"Últimos 30 dias":30,
@@ -116,13 +142,13 @@ with tab1:
             "Retorno": "{:.2%}", "Volume Total": "{:,.0f}", "RSI": "{:.2f}",
             "MACD": "{:.5f}", "MACD_Signal": "{:.5f}", "SMA_20": "{:.5f}",
             "SMA_50": "{:.5f}", "EMA_20": "{:.5f}", "EMA_50": "{:.5f}",
-            "Preço Atual": "U$ {:,.2f}"}), use_container_width=True)
+            "Preço Atual": "U$ {:,.2f}"}), width='stretch')
 
         with st.expander("📊 Detalhes Gráficos"):
             # Gráfico de pizza - Volume
             fig_pos_pie = px.pie(top_pos, values="Volume Total", names="Ticker",
                                  title=f"🟢 Distribuição de Volume - Top {top_n} Ganhadores")
-            st.plotly_chart(fig_pos_pie, use_container_width=True)
+            st.plotly_chart(fig_pos_pie, width='stretch')
 
             # Histórico do RSI inicial (com top 5 por padrão)
             max_initial = min(5, len(top_pos))
@@ -141,7 +167,7 @@ with tab1:
                 yaxis_title="RSI",
                 height=400
             )
-            st.plotly_chart(fig_rsi_hist, use_container_width=True)
+            st.plotly_chart(fig_rsi_hist, width='stretch')
 
             # Multiselect para atualizar gráfico do RSI
             selected_rsi_tickers = st.multiselect(
@@ -169,13 +195,13 @@ with tab1:
             "Retorno": "{:.2%}", "Volume Total": "{:,.0f}", "RSI": "{:.2f}",
             "MACD": "{:.5f}", "MACD_Signal": "{:.5f}", "SMA_20": "{:.5f}",
             "SMA_50": "{:.5f}", "EMA_20": "{:.5f}", "EMA_50": "{:.5f}",
-            "Preço Atual": "U$ {:,.2f}"}), use_container_width=True)
+            "Preço Atual": "U$ {:,.2f}"}), width='stretch')
 
         with st.expander("📊 Detalhes Gráficos"):
             # Gráfico de pizza - Volume
             fig_neg_pie = px.pie(top_neg, values="Volume Total", names="Ticker",
                                  title=f"🔴 Distribuição de Volume - Top {top_n} Perdedores")
-            st.plotly_chart(fig_neg_pie, use_container_width=True)
+            st.plotly_chart(fig_neg_pie, width='stretch')
 
             # Histórico do RSI inicial (com top 5 por padrão)
             max_initial_neg = min(5, len(top_neg))
@@ -194,7 +220,7 @@ with tab1:
                 yaxis_title="RSI",
                 height=400
             )
-            st.plotly_chart(fig_rsi_hist_neg, use_container_width=True)
+            st.plotly_chart(fig_rsi_hist_neg, width='stretch')
 
             # Multiselect para atualizar gráfico do RSI
             selected_rsi_tickers_neg = st.multiselect(
@@ -254,7 +280,7 @@ with tab2:
     )
     fig_rs.update_layout(height=400)
     
-    st.plotly_chart(fig_rs, use_container_width=True)
+    st.plotly_chart(fig_rs, width='stretch')
 
 # -------------------------
 # -------------------------
@@ -329,7 +355,7 @@ with tab3:
             labels={"RollingCorrelation":"Correlação"}
         )
         fig_corr_line.update_layout(height=400)
-        st.plotly_chart(fig_corr_line, use_container_width=True)
+        st.plotly_chart(fig_corr_line, width='stretch')
 
 
 with tab4:
@@ -383,46 +409,37 @@ with tab4:
                 st.markdown("### 🔹 Insights do Agente de IA")
                 st.write(response['choices'][0]['message']['content'])
 
+    # Logistic Regression Prediction
+    st.markdown("### 📈 Previsão de Aumento de Preço com Regressão Logística")
 
+    # Load model
+    model = load_model("logistic_regression_model.pkl")
 
+    if model is None:
+        st.warning("Modelo de Regressão Logística não encontrado. Treine o modelo executando `python update_data/logistic_regression.py`.")
+    else:
+        # Select ticker
+        available_tickers_lr = df_prices["Ticker"].unique()
+        selected_ticker_lr = st.selectbox("Escolha um ativo para previsão:", available_tickers_lr, key="lr_ticker")
 
+        if st.button("🔮 Prever Probabilidade de Aumento"):
+            features = get_latest_features(selected_ticker_lr)
+            if features is not None:
+                prob = predict_probability(model, features)
+                st.success(f"Probabilidade de aumento de preço para {selected_ticker_lr}: **{prob:.2%}**")
 
+                # Show feature importance (coefficients)
+                feature_names = ["RSI", "MACD", "MACD_Signal", "SMA_20", "SMA_50", "EMA_20", "EMA_50", "Volume"]
+                coefficients = model.coef_[0]
+                importance_df = pd.DataFrame({"Feature": feature_names, "Coefficient": coefficients})
+                importance_df = importance_df.sort_values("Coefficient", ascending=False)
 
-
-
-
-
-
-
-
-
-
-
-
-
+                st.markdown("#### 📊 Importância das Features")
+                st.dataframe(importance_df.style.format({"Coefficient": "{:.4f}"}), width='stretch')
+            else:
+                st.error("Dados insuficientes para o ativo selecionado.")
 
 st.markdown("---")
 
 
 
-# -------------------------
-# Botões de atualização
-# -------------------------
-col_upd1, col_upd2 = st.columns(2)
-with col_upd2:
-    if st.button("🔁 Atualizar Correlações"):
-        with st.spinner("Executando script de correlação..."):
-            result = subprocess.run([sys.executable, "update_data/correlation_main.py"])
-        if result.returncode == 0:
-            st.success("✅ Correlações atualizadas com sucesso.")
-        else:
-            st.error("❌ Erro ao atualizar correlações.")
-
-with col_upd1:
-    if st.button("🔁 Atualizar Preços e Indicadores"):
-        with st.spinner("Executando script de força relativa..."):
-            result = subprocess.run([sys.executable, "update_data/rs_main.py"])
-        if result.returncode == 0:
-            st.success("✅ Força relativa atualizada com sucesso.")
-        else:
-            st.error("❌ Erro ao atualizar força relativa.")
