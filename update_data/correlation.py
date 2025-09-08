@@ -5,8 +5,8 @@ from itertools import combinations
 
 # Configurações
 TICKERS = [
-    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "DOT-USD", "AVAX-USD", "LTC-USD", "XRP-USD", 
-    "AAVE-USD"
+    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "DOT-USD", "AVAX-USD", "XRP-USD", 
+    "AAVE-USD", "TRX-USD", "ADA-USD", "LINK-USD"
 ]
 START_DATE = "2010-01-01"
 END_DATE = "2030-01-01"
