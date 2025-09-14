@@ -89,21 +89,10 @@ def compute_technical_indicators(df_prices):
         rs = avg_gain / avg_loss
         df["RSI"] = 100 - (100 / (1 + rs))
 
-        # MACD (12, 26) e sinal (9)
-        ema12 = df["Price"].ewm(span=12, adjust=False).mean()
-        ema26 = df["Price"].ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        df["MACD"] = macd
-        df["MACD_Signal"] = signal
-
         # Médias móveis simples
         df["SMA_20"] = df["Price"].rolling(window=20).mean()
         df["SMA_50"] = df["Price"].rolling(window=50).mean()
 
-        # Médias móveis exponenciais
-        df["EMA_20"] = df["Price"].ewm(span=20, adjust=False).mean()
-        df["EMA_50"] = df["Price"].ewm(span=50, adjust=False).mean()
 
         all_dfs.append(df)
 

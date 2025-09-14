@@ -2,8 +2,7 @@ from datetime import datetime
 import streamlit as st
 from utils.db import load_corr_data, load_rs_data, load_price_data, get_last_update, engine_rs
 from utils.helpers import update_all_data
-from pages import rankings, relative_strength, correlation, ai_agent  # risk_management opcional
-
+from pages import rankings, relative_strength, correlation, ai_agent
 # -------------------------
 # Configuração da página - Hide Side Bar
 # -------------------------
@@ -56,14 +55,17 @@ selected_period_days = period_options[st.selectbox("🕒 Intervalo de análise:"
 # -------------------------
 # Seleção de abas
 # -------------------------
-tab_options = ["📊 Rankings","💪 Força Relativa","📈 Correlação","🤖 Agente IA"]
+tab_options = ["📊 OHLC","💪 Força Relativa","📈 Correlação","🤖 Agente IA & Machine Learning"]
 selected_tab = st.radio("Escolha uma aba:", tab_options, horizontal=True)
 
-if selected_tab == "📊 Rankings":
+if selected_tab == "📊 OHLC":
     rankings.render_rankings(df_prices, selected_period_days)
 elif selected_tab == "💪 Força Relativa":
-    relative_strength.render_relative_strength(df_rs)
+    relative_strength.render_relative_strength(df_rs, df_prices)
 elif selected_tab == "📈 Correlação":
     correlation.render_correlation(df_corr)
-elif selected_tab == "🤖 Agente IA":
+elif selected_tab == "🔮 Agente IA":
     ai_agent.render_ai_agent(df_prices, df_rs, df_corr)
+
+
+    

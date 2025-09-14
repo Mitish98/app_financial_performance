@@ -21,7 +21,8 @@ Resumo dos dados do aplicativo:
 Forneça respostas baseadas nesses dados sempre que possível.
 """
                 try:
-                    completion = openai.ChatCompletion.create(
+                    client = openai.OpenAI(api_key=st.secrets["openai_api_key"])
+                    completion = client.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=[
                             {"role": "system", "content": "Você é um assistente financeiro que pode consultar dados históricos de criptomoedas."},
@@ -31,7 +32,7 @@ Forneça respostas baseadas nesses dados sempre que possível.
                         temperature=0.2,
                         max_tokens=500
                     )
-                    response = completion.choices[0].message["content"]
+                    response = completion.choices[0].message.content   
                 except Exception as e:
                     response = f"Erro ao acessar OpenAI: {str(e)}"
                 st.success("✅ Consulta realizada!")
