@@ -9,4 +9,4 @@ tqdm>=4.66.0
 ta
 python-dotenv
 scikit-learn
-openai
+openai>=1.0.0

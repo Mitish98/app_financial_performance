@@ -6,7 +6,7 @@ from pages import rankings, relative_strength, correlation, ai_agent
 # -------------------------
 # Configuração da página - Hide Side Bar
 # -------------------------
-st.set_page_config(page_title="📊 Painel de Análises Financeiras", layout="wide")
+st.set_page_config(page_title="📊 Painel de Análises Financeiras para Criptomoedas", layout="wide")
 st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
 # Esconde a barra lateral de páginas
 hide_streamlit_style = """
@@ -55,7 +55,7 @@ selected_period_days = period_options[st.selectbox("🕒 Intervalo de análise:"
 # -------------------------
 # Seleção de abas
 # -------------------------
-tab_options = ["📊 OHLC","💪 Força Relativa","📈 Correlação","🤖 Agente IA & Machine Learning"]
+tab_options = ["📊 OHLC","💪 Força Relativa","📈 Correlação","🔮 Agente IA"]
 selected_tab = st.radio("Escolha uma aba:", tab_options, horizontal=True)
 
 if selected_tab == "📊 OHLC":
@@ -65,7 +65,7 @@ elif selected_tab == "💪 Força Relativa":
 elif selected_tab == "📈 Correlação":
     correlation.render_correlation(df_corr)
 elif selected_tab == "🔮 Agente IA":
-    ai_agent.render_ai_agent(df_prices, df_rs, df_corr)
+    ai_agent.render_ai_agent(df_prices, df_rs, df_corr, selected_period_days)
 
 
     
